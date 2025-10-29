@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments & secrets
+.env
+.env.*
+.venv/
+
+# Local DB / encrypted blobs / caches
+secure_records.db
+*.sqlite*
+*.db
+*.bin
+
+# Logs
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Postman temp files (keep the collection JSON if needed)
+*.postman_environment.json
