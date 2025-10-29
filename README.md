@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Virtual Medical Practitioner (India) — Gemini 2.5 Flash
 
 > **AI Disclosure:** You are interacting with an AI triage assistant. A licensed medical doctor will review the case and issue the final prescription. In an emergency, seek immediate care.
@@ -28,3 +29,7 @@ pip install -r requirements.txt
 cp .env.example .env  # add GOOGLE GEMINI API KEY
 uvicorn web.api:app --host 0.0.0.0 --port 8000 --reload
 ``
+=======
+# virtualmedicalpractitioner
+An autonomous Agentic AI based Medical Practitioner
+>>>>>>> origin/main
