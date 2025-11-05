@@ -68,11 +68,3 @@ def triage(data: TriageIn):
 def medicines(q: MedQuery):
     card = build_medicine_card(q.query)
     return card
-
-# web/api.py  (append at the bottom)
-
-import gradio as gr
-from ui.gradio_ui import build_ui
-
-demo = build_ui()
-app = gr.mount_gradio_app(app, demo, path="/ui")

@@ -36,7 +36,7 @@ TRIAGE_SYSTEM = (
     "IMPORTANT:\n"
     "- Adapt questions to what the patient already provided; DO NOT ask for the same detail again.\n"
     "- Ask only 1–2 concise questions per turn, specific to this patient's context.\n"
-    "- Do NOT provide diagnosis or prescriptions. If red flags emerge, advise urgent care.\n"
+    "- Do NOT provide diagnosis or prescriptions. For common, non-serious complaints (e.g., mild cold, acidity, headache), offer safe self-care advice. If red flags emerge, advise urgent care.\n"
     "OUTPUT: Return ONLY valid JSON (no markdown, no preface) with this schema:\n"
     "{\n"
     '  \"questions_next\": [string, ...],\n'
@@ -52,6 +52,22 @@ _GENTLE_FALLBACKS = [
     "Is there anything that makes your symptoms better or worse? Have you noticed any new changes?",
     "Have you taken anything or tried any home care yet? How are you feeling overall at the moment?"
 ]
+
+# Common conditions for which a generic medicine can be prescribed.
+COMMON_CONDITIONS = {
+    "cold": "Stay warm, rest, and drink plenty of fluids. Steam inhalation may help.",
+    "headache": "Rest in a quiet, dark room. Stay hydrated. Avoid screen time.",
+    "acidity": "Avoid spicy foods, eat small meals, and consider antacids if needed.",
+    "fatigue": "Ensure adequate sleep, hydration, and nutrition. Avoid overexertion.",
+    "body ache": "Gentle stretching, warm baths, and rest can help relieve discomfort."
+}
+
+def detect_common_condition(user_msg: str) -> Optional[Tuple[str, str]]:
+    msg = user_msg.lower()
+    for condition, advice in COMMON_CONDITIONS.items():
+        if condition in msg:
+            return condition, advice
+    return None
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -155,6 +171,19 @@ def start_triage(
         history.append({"role": "user", "parts": [user_msg]})
 
     last_bot = _last_assistant_turn(history)
+
+    common = detect_common_condition(user_msg or "")
+    if common:
+        condition, advice = common
+        fallback_json = {
+            "questions_next": ["Is there anything else you'd like to share about your symptoms?"],
+            "red_flags": [],
+            "summary": f"Patient reported symptoms consistent with mild {condition}.",
+            "self_care_advice": advice,
+        }
+        assistant_reply = fallback_json["questions_next"][0]
+        history.append({"role": "model", "parts": [assistant_reply]})
+        return fallback_json, assistant_reply, history
 
     # Build message list (include disclosure / banner and the system instruction up front)
     messages = [

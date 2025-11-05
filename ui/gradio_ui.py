@@ -6,7 +6,7 @@ Features:
 - Identity verification + DPDP-style consent capture.
 - Triage chat using Chatbot messages format (OpenAI-style {role, content}).
 - Progress bars (client & server-side) during long-running operations.
-- Medicines lookup (India-specific legal status & precautions).
+- Medicines lookup (India-specific legal status & precautions) with RED safety callouts.
 - Doctor Review tab (list recent consultations, view details, mark review decisions).
 - Mounted inside FastAPI at /ui (see web/api.py).
 
@@ -31,8 +31,30 @@ from storage.store import (
 from agents.identity import identity_payload
 from agents.compliance import generate_consent
 from agents.triage import start_triage
-from agents.medication import build_medicine_card
+from agents.medication import build_medicine_card, get_medicine_safety_json
 from core.constants import AI_DISCLOSURE, EMERGENCY_BANNER
+
+
+# ------------------------------
+# Helpers (formatting / UI)
+# ------------------------------
+
+def _format_alert_block(title: str, items: list[str]) -> str:
+    """
+    Render a strong red/bold callout block for safety items.
+    Works inside a Markdown component (HTML allowed).
+    """
+    if not items:
+        return ""
+    # Keep HTML simple to avoid sanitizer issues across Gradio versions.
+    bullets = "".join(f"<li><b>{i}</b></li>" for i in items)
+    return (
+        '<div style="border-left:6px solid #c62828; background:#ffebee; padding:10px 12px; '
+        'margin:12px 0; border-radius:6px">'
+        f'<div style="color:#b00020; font-weight:800; font-size:14px; text-transform:uppercase;">{title}</div>'
+        f'<ul style="margin:8px 0; padding-left:18px; color:#111; font-size:14px;">{bullets}</ul>'
+        "</div>"
+    )
 
 
 # ------------------------------
@@ -106,7 +128,7 @@ def _triage(pid, llm_history, chat_messages, user_msg):
         return llm_history, None, chat_messages, chat_messages, ""
 
     # Append user turn to LLM-native history so the agent sees context
-    llm_history.append({"role": "user", "parts": [user_msg]})
+    # llm_history.append({"role": "user", "parts": [user_msg]})
 
     # Call triage agent (returns dict result, assistant reply text, and updated_history)
     result, assistant_reply, updated_history = start_triage(llm_history, user_msg=user_msg)
@@ -114,6 +136,16 @@ def _triage(pid, llm_history, chat_messages, user_msg):
     # Chatbot messages format (OpenAI-style)
     chat_messages.append({"role": "user", "content": user_msg})
     chat_messages.append({"role": "assistant", "content": assistant_reply})
+
+    # ✅ Show self-care advice if available and not already part of assistant_reply
+    if result.get("self_care_advice"):
+        advice = result["self_care_advice"].strip()
+        summary = result.get("summary", "").lower()
+        if advice and "symptom" in summary and advice.lower() not in assistant_reply.lower():
+            chat_messages.append({
+                "role": "assistant",
+                "content": f"🩺 **Self-care advice:**\n{advice}"
+            })
 
     print(f"[{_dt.datetime.now().isoformat()}] TRIAGE OUT reply={assistant_reply[:80]!r}")
 
@@ -140,23 +172,73 @@ def _save_consult(pid, llm_history, result):
 
 
 def _med_search(query):
-    """Return a medicine info card (India specifics)."""
-    prog = gr.Progress()
-    prog(0.2, desc="Searching medicine info...")
+    """
+    Stream status updates into the Medicines Markdown while we fetch:
+      1) the base card
+      2) safety JSON
+      3) format the final result
+    """
+    # 0) Guard: empty query
     if not (query and query.strip()):
-        return "Enter a generic/brand name to search."
-    card = build_medicine_card(query.strip())
-    prog(0.95, desc="Formatting...")
+        yield "Enter a generic/brand name to search."
+        return
+
+    # 1) Show immediate status
+    yield "⏳ **Searching…** Please wait."
+
+    # Optional server-side progress (overlay)
+    prog = gr.Progress()
+    prog(0.15, desc="Searching medicine info…")
+
+    # 2) Build the card
+    try:
+        card = build_medicine_card(query.strip())
+    except Exception as e:
+        yield f"❌ Error while searching: {e}"
+        return
+
+    # 3) Inline status update while we fetch safety
+    yield "🔍 **Collecting safety highlights…**"
+    prog(0.55, desc="Collecting safety highlights…")
+    try:
+        from agents.medication import get_medicine_safety_json  # local import to avoid circulars at load
+        safety = get_medicine_safety_json(
+            query.strip(),
+            card.get("generic_name", ""),
+            card.get("drug_class", "")
+        )
+    except Exception as e:
+        safety = {}
+        # We still continue; just skip safety blocks.
+        yield f"⚠️ Couldn’t fetch safety highlights: {e}"
+
+    # 4) Formatting final output
+    yield "⚙️ **Formatting…**"
+    prog(0.85, desc="Formatting result…")
+
+    # Build red callout blocks (re-use your helper)
+    blk_prec = _format_alert_block("Mandatory Precautions", safety.get("mandatory_precautions", []))
+    blk_impl = _format_alert_block("Implications if ignored", safety.get("implications_if_ignored", []))
+    blk_who  = _format_alert_block("Who should avoid", safety.get("who_should_avoid", []))
+    blk_how  = _format_alert_block("How to take", safety.get("how_to_take", []))
+
+    cites = safety.get("source_citations", []) if safety else []
+    cite_md = ""
+    if cites:
+        cite_md = "\n**Sources:**\n" + "\n".join(f"- {c}" for c in cites[:6])
+
     text = (
-        f"**Query:** {card['query']}\n\n"
-        f"**Legal status (India):** {card['rx_classification']}\n\n"
-        f"**Summary (Indian context):**\n{card['llm_summary']}\n\n"
+        f"**Query:** {card.get('query','')}\n\n"
+        f"**Legal status (India):** {card.get('rx_classification','')}\n\n"
+        f"**Summary (Indian context):**\n{card.get('llm_summary','')}\n\n"
+        f"{blk_prec}{blk_impl}{blk_who}{blk_how}"
+        f"{cite_md}\n\n"
         f"> ⚠️ **Schedule H/H1/X** items are prescription-only in India. "
         f"Unscheduled items may be sold without prescription—confirm with your pharmacist."
     )
-    prog(1.0, desc="Done")
-    return text
 
+    prog(1.0, desc="Done")
+    yield text
 
 # ------------------------------
 # Doctor Review helpers
@@ -336,7 +418,8 @@ def build_ui():
         # ----------
         with gr.Tab("Medicines"):
             gr.Markdown(
-                "Look up a medicine (generic/brand) and see **Indian** legal status & precautions."
+                "Look up a medicine (generic/brand) and see **Indian** legal status & precautions.  \n"
+                "_Red boxes highlight **Mandatory Precautions** and **Implications if ignored**._"
             )
             q = gr.Textbox(label="Medicine name", placeholder="paracetamol")
             search_btn = gr.Button("Search")
